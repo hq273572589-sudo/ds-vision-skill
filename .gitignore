@@ -1,0 +1,9 @@
+# 含密钥，切勿提交
+scripts/config.json
+# Python
+__pycache__/
+*.pyc
+# 技能开发/测试产物
+workspace/
+evals/
+*.log
