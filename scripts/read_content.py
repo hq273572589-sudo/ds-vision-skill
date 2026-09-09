@@ -135,6 +135,42 @@ def check_runtime() -> None:
             print(f"  - {m}", file=sys.stderr)
 
 
+# ---------------------------------------------------------------- 显式授权的文件查找
+# 仅用于用户明确要求「帮我在某个目录里找文件」时。纯 Python os.walk 实现，
+# 不调用 shell 的 find (Windows 原生没有 GNU find)。普通识别流程不经过这里。
+
+SKIP_DIRS = {".git", ".svn", "node_modules", "__pycache__", ".venv", "venv",
+             "site-packages", "dist", "build", ".idea", ".vscode"}
+
+
+def find_files(root: Path, name_part: str | None, latest: bool,
+               max_results: int) -> list[Path]:
+    """在指定目录(递归)中查找支持的图片/文档，按修改时间倒序返回。
+
+    只在该目录内找，绝不越界扫描。返回前 max_results 个（latest 时只取最新 1 个）。
+    """
+    exts = set(SUPPORTED)
+    hits: list[tuple[float, Path]] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for fn in filenames:
+            p = Path(dirpath) / fn
+            if p.suffix.lower() not in exts:
+                continue
+            if name_part and name_part.lower() not in fn.lower():
+                continue
+            try:
+                hits.append((p.stat().st_mtime, p))
+            except OSError:
+                continue
+    hits.sort(key=lambda x: x[0], reverse=True)  # 最新的在前
+    if latest:
+        hits = hits[:1]
+    else:
+        hits = hits[:max_results]
+    return [p for _, p in hits]
+
+
 def probe_type(path: Path) -> str | None:
     """根据扩展名 + 魔数判断文件类型（返回 SUPPORTED 键或 None）。"""
     ext = path.suffix.lower()
@@ -390,6 +426,14 @@ def process(path: Path, cfg: dict, opts) -> tuple[str, list[str]]:
 def main() -> int:
     ap = argparse.ArgumentParser(description="把图片/PDF/Office 文档转成文本")
     ap.add_argument("paths", nargs="*", help="要处理的文件（可多个，用空格分隔）")
+    ap.add_argument("--find-in", metavar="DIR", default=None,
+                    help="仅当用户明确要求时：在指定目录(递归)中查找支持的图片/文档并识别。纯 Python 搜索，不调用 shell find")
+    ap.add_argument("--name-part", metavar="SUBSTR", default=None,
+                    help="与 --find-in 联用：只匹配文件名包含该关键字的文件")
+    ap.add_argument("--latest", action="store_true",
+                    help="与 --find-in 联用：只处理最新修改的那一个文件")
+    ap.add_argument("--max-results", type=int, default=10,
+                    help="与 --find-in 联用：最多处理结果数（默认 10）")
     ap.add_argument("--lang", choices=["zh", "en"], default="zh",
                     help="视觉模型转录语言（默认 zh）")
     ap.add_argument("--force-vision", action="store_true",
@@ -418,9 +462,25 @@ def main() -> int:
         print(list_models(cfg, args.timeout, args.retries))
         return 0
 
+    # 分支 B+：用户明确授权「帮我找」——在指定目录内查找并识别。
+    # 纯 Python os.walk，不经过 shell；用户没显式要求时不会走到这里。
+    if args.find_in:
+        root = Path(args.find_in)
+        if not root.is_dir():
+            print(f"[vision-bridge] 目录不存在: {root}", file=sys.stderr)
+            return 2
+        found = find_files(root, args.name_part, args.latest, args.max_results)
+        if not found:
+            extra = f"（文件名含 {args.name_part!r}）" if args.name_part else ""
+            print(f"[vision-bridge] 在 {root} 下没有找到支持的图片/文档{extra}", file=sys.stderr)
+            return 1
+        print(f"[vision-bridge] 在 {root} 下找到 {len(found)} 个文件，将依次识别：")
+        for i, p in enumerate(found, 1):
+            print(f"  [{i}] {p}")
+        args.paths = [str(p) for p in found]
 
     if not args.paths and not args.configure:
-        ap.error("至少需要指定一个文件路径（或使用 --check / --configure）")
+        ap.error("至少需要指定一个文件路径（或使用 --find-in / --check / --configure）")
     cfg = load_config()
     if args.configure or cfg is None:
         cfg = first_run_config()

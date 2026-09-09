@@ -6,15 +6,30 @@ rem  vision-bridge launcher
 rem  Finds a suitable Python 3 (prefers official 3.12), ensures
 rem  optional deps, then runs scripts/read_content.py.
 rem  Portable: works on any Windows machine with Python 3.9+.
-rem  Prefers an active conda env when present.
 rem ============================================================
 
 set "SD=%~dp0"
 set "PYTHON="
 
-rem 0) Prefer an active conda env
+rem 0) Prefer a dedicated conda env (e.g. "visionbridge") if present
 if exist "%CONDA_PREFIX%\python.exe" (
     set "PYTHON=%CONDA_PREFIX%\python.exe"
+    goto :verify
+)
+if exist "D:\minconda3\envs\visionbridge\python.exe" (
+    set "PYTHON=D:\minconda3\envs\visionbridge\python.exe"
+    goto :verify
+)
+if exist "%USERPROFILE%\miniconda3\envs\visionbridge\python.exe" (
+    set "PYTHON=%USERPROFILE%\miniconda3\envs\visionbridge\python.exe"
+    goto :verify
+)
+if exist "%ProgramData%\miniconda3\envs\visionbridge\python.exe" (
+    set "PYTHON=%ProgramData%\miniconda3\envs\visionbridge\python.exe"
+    goto :verify
+)
+if exist "%USERPROFILE%\anaconda3\envs\visionbridge\python.exe" (
+    set "PYTHON=%USERPROFILE%\anaconda3\envs\visionbridge\python.exe"
     goto :verify
 )
 

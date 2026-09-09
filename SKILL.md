@@ -1,22 +1,178 @@
 ---
 name: vision-bridge
-description: 为不支持视觉的模型（如 DeepSeek 文本模型）把图片、PDF、扫描件、Word/Excel/PPT 等文件内容识别并转成文本，再供当前模型使用。当用户上传图片（截图/照片/图表/流程图/二维码/表情包）、PDF、文档并希望读取其内容时，务必使用本技能。即使当前模型无法直接"看"图像，也要通过本技能的桥接脚本把非文本内容转为文本。也用于图片 OCR、扫描件 PDF 转文字、从图片/文档中提取信息、把图片表格转成 markdown 等场景。
+description: 为不支持视觉的模型（如 DeepSeek-V4-Flash）把图片、PDF、扫描件、Word/Excel/PPT 等文件内容识别并转成文本，再供当前模型使用。当用户上传图片（截图/照片/图表/流程图/二维码/表情包）、PDF、文档并希望你读取其内容时，务必使用本技能。即使当前模型无法直接"看"图像，也要通过本技能的桥接脚本把非文本内容转为文本。也用于图片 OCR、扫描件 PDF 转文字、从图片/文档中提取信息、把图片表格转成 markdown 等场景。
 ---
 
 # vision-bridge
 
-把 **图片 / PDF / Office 文档** 的内容识别为文本，桥接给不支持视觉的模型使用。
+把**图片、PDF、Office 文档**的内容识别为文本，桥接给不支持视觉的模型使用。
 
-## 使用前：首次必须配置视觉模型
-1. `cp scripts/config.example.json scripts/config.json`
-2. 编辑 `scripts/config.json`：`base_url`（OpenAI 兼容 `/v1` 端点）、`api_key`（你的 Key）、`model`（**必须支持图片**，如 `qwen2.5vl` / `llava` / `gpt-4o`）。
+## ⚠️ 前置规则（最高优先级，先于一切流程）
 
-> 注意：`scripts/config.json` 已被 `.gitignore` 排除，请勿包含密钥到仓库/提交。
+1. **禁止自动扫描磁盘**：任何场景下，都不能在用户没有明确授权的情况下，自动执行 `bash find` / PowerShell 等命令扫描工作区、全盘或目录查找文件。**用户上传图片 ≠ 授权扫描**。
+2. **对话中已上传图片 → 直接识别，不检索**：用户上传/拖入了图片且没有给出文件路径时，直接走「分支 A 对话图片」，**跳过一切本地文件检索**。
+3. **只有用户显式给出路径时，才读磁盘**：「分支 B 显式路径」——用户明确写明了路径，才读取该磁盘文件。
+4. **工具调用被拒绝/中断时立即止损**：一旦某个工具调用被用户拒绝或打断，立刻丢弃当前未完成的本地读取分支，**不要重试同一个被拒绝的命令**，不要构造或残留任何图片内容块，改为向用户说明并继续（见下方「异常处理」）。
+5. **输入来源二选一，互斥**：每次处理只走一个分支——A 对话图片（无 shell）或 B 显式路径（读磁盘）。不要「先 B 找不到再 A 兜底」式地交叉扫描。
 
-## 调用
-- Windows：`run_vision_bridge.bat <文件>`
-- 直接：`python scripts/read_content.py <文件>`
-- 图片 → 视觉模型识别；PDF/Office → 优先本地提取（需 `pymupdf/python-docx/openpyxl/python-pptx`），扫描无文本页则走视觉模型。
+> **为什么有这条规则**：旧逻辑会在用户上传图片后主动用 `find` 扫描磁盘找同名文件，Windows 原生没有 GNU `find` 导致命令报错；用户拒绝该命令后流程中断、残留无效图片内容，触发后端 `400 inference request is invalid`。修复后：上传即走分支 A，不需要任何文件搜索。
 
-## 参数
-`--lang en` / `--list-models` / `--configure` / `--check` / `--timeout 120` / `--retries 3`
+## 何时使用
+
+- 用户在对话中**上传图片**（截图、照片、图表、流程图、二维码、表情包、拍照的文档等）
+- 用户上传 **PDF**（尤其是扫描件/没有文字层的图片型 PDF）
+- 用户上传 **Word / Excel / PPT** 并需要读取内容
+- 用户说"看看这张图 / 这个文件里写了啥 / 帮我识别 / 帮我转文字"
+- 虽然用户没明说，但任务明显需要读取图片内容（比如从截图里提取报错信息）
+
+> 判断标准：**如果当前模型本身无法直接看到图片内容，就应当使用本技能**。不要因为脚本是"可选的"就跳过。
+
+> ⚠️ **重要：不要直接读取/查看图片文件内容**（在无视觉能力的环境下会报错）。识别图片一律走脚本 `scripts/read_content.py`。
+
+## 环境要求（通用/跨电脑）
+
+本技能是**通用**的，换电脑、换人使用只需满足：
+
+- **Python 3.9+**（推荐 3.12）。统一通过启动器 `run_vision_bridge.bat` 调用，它会自动按优先级查找解释器：`py -3` → `%LOCALAPPDATA%\Programs\Python\Python3*` → `C:\Python3*` → `python3.12`/`python3`/`python`。**不要直接用裸 `python` 命令**（在部分机器上可能指向 MSYS2 等无依赖的环境）。
+- **可选依赖**（本地提取 PDF/Office、压缩大图）：`pillow`、`pymupdf`、`python-docx`、`openpyxl`、`python-pptx`。启动器首次运行会自动尝试安装；失败时手动执行 `python -m pip install pillow pymupdf python-docx openpyxl python-pptx`（图片识别不需要这些库，缺失时自动降级）。
+- **视觉端点**：必须配置一个**支持图像的模型**（见配置步骤）。纯文本模型（如 DeepSeek-V4-Flash）会拒绝 `image_url`。
+
+> 所有调用统一走启动器：`"<skill目录>/run_vision_bridge.bat" <参数...>`
+
+> **本机（Windows + conda）**：启动器会自动优先使用 conda 环境 `visionbridge`（`D:\minconda3\envs\visionbridge\python.exe`，已装好 pillow/pymupdf/python-docx/openpyxl/python-pptx）。也可以跳过启动器直接调用：
+> `"D:\minconda3\envs\visionbridge\python.exe" "<skill目录>\scripts\read_content.py" <文件路径>`
+
+## 工作流程
+
+### 第 1 步：判断输入来源（互斥分支，先做这一步）
+
+**分支 A —— 会话粘贴/截图图片（默认）**
+
+- 触发条件：用户直接**截图、复制粘贴图片到会话**，没有写文件路径。
+- 机制（已实测确认）：粘贴图片会被转成 base64 `image` 块写进**当前会话转录 JSONL**（`~/.claude/projects/<工作目录编码>/<session-id>.jsonl`，旧会话有实例证明）。但纯文本后端会在**请求边界拒收 image 块**（400），且失败的请求经常**不落盘**——能否取回取决于转录里是否真有该块。
+- 动作：
+  1. 在本会话转录 JSONL 里查 `"type":"image"` 块：无 → 说明本次粘贴未落盘，跳到步骤 3；有 → 提取该块的 `"data":"..."` base64 字段。
+  2. 解出 base64 → 存为临时图片 → 调用脚本识别。识别前**主动跟用户确认内容**是否符合（防止取到旧图）。
+  3. 未落盘时：如实说明"粘贴图被后端拦截、未写入会话记录"，请用户选一种方式（**不要全盘扫描**）：
+     - 给文件路径（分支 B）；
+     - 把图放某目录，给目录 → `--find-in`；
+     - 或换支持视觉的主会话模型（`/model`）。
+- 禁止：全盘 `find` / 遍历整个工作区 / 读取无关应用（如 zcode）的目录。
+
+**分支 B —— 用户显式给出的本地路径**
+
+- 触发条件：用户明确写明了路径（如 `D:/xxx/image.png`、`evals/files/sample_table.png`）。
+- 动作：校验路径存在后，调用脚本识别。
+- 校验存在性：用 `Read` 或脚本本身；**不要为了"确认存在"去跑 find**。
+
+**分支 B+ —— 用户明确授权「帮我找」（唯一允许搜索的情形）**
+
+- 触发条件：用户明确说「图在 XX 目录里，帮我找」「找一下最近的截图」这类话（显式授权搜索）。
+- 动作：用脚本内置的 `--find-in`（Python 原生 `os.walk` 搜索，不经过 shell find）：
+  ```bash
+  "<skill目录>/run_vision_bridge.bat" --find-in "D:/某个目录" --name-part 截图 --latest
+  ```
+  只搜索用户指定的目录，不越界；这是**唯一的**搜索入口。
+
+### 第 2 步：确认配置
+
+检查脚本目录下 `scripts/config.json` 是否存在且可解析：
+
+```
+<skill目录>/scripts/config.json
+```
+
+**若不存在**：不要替用户猜测端点/密钥。运行配置向导（这一步会在终端交互提问，用户需要自己输入）：
+
+```bash
+"<skill目录>/run_vision_bridge.bat" --configure
+```
+
+配置内容（OpenAI 兼容格式）：
+- `base_url`：如 `http://localhost:11434/v1`（Ollama）或云服务端点
+- `api_key`：本地模型可留空；云端需要填
+- `model`：如 `qwen2.5vl` / `gpt-4o` / `llava` / `gemini-2.0-flash`
+
+配置完成后测试一次简单调用，确保端点可用。
+
+### 第 3 步：调用脚本，把内容转成文本
+
+单文件：
+
+```bash
+"<skill目录>/run_vision_bridge.bat" "<文件路径>"
+```
+
+多文件（空格分隔）：
+
+```bash
+"<skill目录>/run_vision_bridge.bat" "a.png" "b.pdf" "c.docx"
+```
+
+常用参数：
+- `--find-in <目录>`：在指定目录内查找支持的图片/文档并识别（**仅用户明确要求时使用**）
+- `--name-part <关键字>`：与 `--find-in` 联用，按文件名过滤
+- `--latest`：与 `--find-in` 联用，只处理最新修改的一个
+- `--lang en`：要求视觉模型以英文转录（默认中文 `zh`）
+- `--force-vision`：Office 文档也强制走视觉模型（不信任本地提取时）
+- `--configure`：重新配置端点
+- `--list-models`：列出端点可用模型（便于挑选支持图像的视觉模型），不处理文件
+- `--timeout 120`：单次请求超时秒数（默认 120）
+- `--retries 3`：失败自动重试次数（默认 3，对 5xx/429/超时/连接错误自动重试）
+- `--check`：只检查本地提取依赖（不调视觉模型）
+
+> 依赖说明：脚本的 HTTP 调用只用 Python 标准库（无需 `requests`）；`Pillow` 可选（用于压缩超大图片，缺失时发送原图）；`pymupdf` / `python-docx` / `openpyxl` / `python-pptx` 可选（用于本地提取 PDF/Office，缺失时自动降级给视觉模型）。
+
+### 第 4 步：处理后输出
+
+脚本会把结果打印到**标准输出**。把这份文本作为图片/文档的**内容**呈现给用户，然后用你（当前模型）的能力做后续分析、总结、回答用户的问题。例如：
+
+```
+[文件内容] 这是用户上传的截图，识别出的文本是：
+自己发明的描述性文字...
+分析：……
+```
+
+**不要**只给用户"已识别完成"这种空话——要把识别出的内容真正用起来。
+
+## 异常处理（工具被拒绝 / 中断）
+
+当某个工具调用（Bash / PowerShell）被用户**拒绝**或被打**断**时：
+
+1. **立即停止**正在进行的本地文件读取分支，**不要重试同一个被拒绝的命令**。
+2. **不要**把任何「半成品」的图片内容、占位符或无效 payload 追加进回复或后续消息——那会污染上下文，触发 `400 inference request is invalid`。
+3. 改为输出一句简短提示，例如：
+   > 好的，已取消本地文件检索。请直接告诉我图片的文件路径（例如 `C:\Users\...\图片.png`），或把图片放进某个目录后告诉我目录，我用 `--find-in` 帮你找。
+4. 继续正常对话，等待用户下一步指示。
+
+## 处理策略（脚本内置，了解即可）
+
+| 文件类型 | 首选方式 | 降级方式 |
+|---|---|---|
+| 图片 (png/jpg/gif/webp/...) | 视觉模型识别 | — |
+| PDF（文字版） | 本地 pymupdf 提取 | 扫描页自动切图送视觉模型 |
+| Excel (.xlsx) | 本地 openpyxl 提取 | —（失败则视觉模型） |
+| Word (.docx) | 本地 python-docx 提取 | 视觉模型兜底 |
+| PPT (.pptx) | 本地 python-pptx 提取 | 视觉模型兜底 |
+
+**本地提取不需要网络和密钥**，所以对 PDF/Office 通常更优先。图片没有本地兜底，必须走视觉模型。
+
+## 常见问题排查
+
+- **粘贴/截图图片触发 `400 inference request is invalid`**：这是**预期内的**。纯文本后端会在**请求边界**拒绝任何含图片块的请求（发生在模型运行前），且失败的请求经常**不落盘**（本次实测确认：当前会话转录里无图块）。因此：
+  - 若转录 JSONL 里有 `"type":"image"` 块 → 按分支 A 提取 base64 识别。
+  - 若没有（常见于 400 时）→ 该图取不回来，需用户给路径/目录，或换视觉模型。
+  - **根治方案**：在自建网关（`ANTHROPIC_BASE_URL` 指向的 `zzzxin.xin` `/v1/messages`）里对纯文本模型**改写 image 块为文本引用**（"用户上传了图片，请调用 vision-bridge 识别"），即可对 Claude Code 透明生效、彻底消除 400——用户在 deepseek-harness 里已有同样的实现可参考。
+- **`Tool interrupted` / 被拒绝的扫描分支**：本技能已改为不自动扫描磁盘（只查已知粘贴缓存目录），从源头避免这类中断。若当前会话已不可用，**新开一个会话**再处理（旧会话不可复用）。
+- **Windows 下 `find` 命令报错**：Windows 原生没有 GNU `find`。本技能已禁止使用 `find`；需要搜索时用脚本 `--find-in`（Python 原生），或 PowerShell `Get-ChildItem -Recurse -Include *.png,*.jpg,...`（且仅限用户明确授权）。
+- **"视觉模型调用失败" / 超时**：检查 `base_url` 是否可达、`api_key` 是否有效、模型名是否正确。本地 Ollama 需先 `ollama pull <model>` 且在 `/v1` 路径提供 OpenAI 兼容接口。
+- **报错 `unknown variant image_url, expected text`**：当前配置的模型是**纯文本模型**（如 DeepSeek-V4-Flash），不支持图像。先用 `--list-models` 查看端点可用模型，选一个支持视觉的模型名（如 `qwen2.5vl` / `gpt-4o` / `gemini-2.0-flash` / `llava` 等），再用 `--configure` 更新 `model`。
+- **识别文字全是乱码或空白**：可能是模型不支持图像，换有视觉能力的模型名。
+- **PDF 整份都走视觉模型**：可能是环境没装 pymupdf（运行 `python -m pip install pymupdf python-docx openpyxl python-pptx`），或确实是扫码 PDF。
+- **配置错想重配**：删掉 `scripts/config.json` 或用 `--configure`。
+
+## 边界与安全
+
+- 本技能只做**本地调用你配置好的端点**，不发送任何数据到 Anthropic。
+- 涉及敏感内容（如身份证、合同、营业执照）时，选择合适的本地视觉模型，数据不出本机。
+- 磁盘搜索只在用户显式授权时进行（`--find-in` 限定在用户指定的目录内），永不主动全盘扫描。
