@@ -13,7 +13,7 @@
 ```
 
 - HTTP 只用 **Python 标准库**（`urllib`），无需 `requests`。
-- 图片：直接送视觉模型（无 Pillow 发原图，有 Pillow 压缩超大图）。
+- 图片：先走**本地 RapidOCR 快速通道**（CPU 秒级、不联网）；未安装 / 识别失败 / 有效文字过少（图表、照片）时自动降级视觉模型（无 Pillow 发原图，有 Pillow 压缩超大图）。`--force-vision` 可跳过 OCR。
 - PDF：本地 `pymupdf` 提取文字层；扫描页自动切图送视觉模型。
 - Office：本地 `python-docx`/`openpyxl`/`python-pptx` 提取；失败降级给视觉模型。
 - 网络请求带**自动重试**（5xx/429/超时/连接错误），可配 `--timeout`/`--retries`。
@@ -21,7 +21,7 @@
 ## 环境要求（通用/跨电脑）
 
 - **Python 3.9+**（推荐 3.12）。通过启动器 `run_vision_bridge.bat` 自动查找解释器，**不要直接用裸 `python`**（部分机器上可能指向 MSYS2 等无依赖环境）。
-- **可选依赖**（本地提取 PDF/Office、压缩大图）：`pillow`、`pymupdf`、`python-docx`、`openpyxl`、`python-pptx`。启动器首次运行自动尝试安装；图片识别不需要它们。
+- **可选依赖**（本地提取 PDF/Office、图片本地 OCR、压缩大图）：`pillow`、`pymupdf`、`python-docx`、`openpyxl`、`python-pptx`、`rapidocr-onnxruntime`。启动器首次运行自动尝试安装；缺失时对应能力自动降级（图片本地 OCR 缺失则直接走视觉模型）。
 - **视觉端点**：一个支持图像的 OpenAI 兼容端点 + 模型（如 `gpt-5.6-terra` / `gpt-4o` / `qwen2.5vl` / `llava` / `gemini-2.0-flash`）。纯文本模型不行。
 
 ## 安装
@@ -88,7 +88,7 @@ run_vision_bridge.bat "image.png" --lang en
 | `--latest` | — | 与 `--find-in` 联用：只处理最新修改的那一个文件 |
 | `--max-results N` | `10` | 与 `--find-in` 联用：最多处理结果数 |
 | `--lang {zh,en}` | `zh` | 视觉模型转录语言 |
-| `--force-vision` | 关 | Office 文档也强制走视觉模型 |
+| `--force-vision` | 关 | 图片和 Office 文档都跳过本地提取/OCR，强制走视觉模型 |
 | `--configure` | — | 重新配置端点 |
 | `--list-models` | — | 列出端点可用模型 |
 | `--model NAME` | — | 临时覆盖 config 中的模型名（不写入配置） |

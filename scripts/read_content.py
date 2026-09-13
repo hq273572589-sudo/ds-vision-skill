@@ -7,7 +7,9 @@ vision-bridge: 本地内容识别与 OCR 桥接脚本。
 
 策略（按文件类型分层，能本地提取就不调视觉模型）：
   图片 (.png/.jpg/.jpeg/.gif/.bmp/.webp/.tiff/.ico/.svg)
-      → 直接走视觉模型（无 OCR 本地兜底可用）
+      → 先走本地 RapidOCR 快速通道（秒级）；RapidOCR 未安装 / 识别失败 /
+        有效文字过少（图表、照片等）时自动降级为视觉模型
+        （--force-vision 可跳过 OCR 直接走视觉模型）
   文字版 PDF
       → 本地 pymupdf 提取文本；某页无文字（扫描页）自动降级为视觉模型
   Excel (.xlsx/.xlsm/.xltx/.xltm)
@@ -127,9 +129,13 @@ def check_runtime() -> None:
         import pptx  # noqa: F401
     except ImportError:
         missing.append("python-pptx                 (PPT)       → python -m pip install python-pptx")
+    try:
+        import rapidocr_onnxruntime  # noqa: F401
+    except ImportError:
+        missing.append("rapidocr-onnxruntime       (图片本地OCR) → python -m pip install rapidocr-onnxruntime")
     if missing:
         # 不致命：仅失去本地提取能力，视觉模型仍可兜底全文理解
-        print("以下本地提取库缺失（不影响图片识别，但 PDF/Office 将依赖视觉模型）：",
+        print("以下本地提取库缺失（对应类型将依赖视觉模型）：",
               file=sys.stderr)
         for m in missing:
             print(f"  - {m}", file=sys.stderr)
@@ -258,6 +264,34 @@ def extract_office(path: Path, kind: str) -> tuple[str, bool]:
     return "", False
 
 
+# ---------------------------------------------------------------- 本地 OCR 快速通道
+
+def ocr_image(path: Path) -> str | None:
+    """本地 RapidOCR 识别图片文字（CPU 秒级，不联网）。
+
+    返回识别文本；以下情况返回 None，由调用方降级视觉模型：
+      - rapidocr-onnxruntime 未安装
+      - 识别异常（不支持的格式如 svg、文件损坏等）
+      - 高置信度行不足或有效字符 < 10（图表/照片/小字模糊图，交给视觉模型理解）
+    """
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError:
+        return None
+    try:
+        result, _ = RapidOCR()(str(path))
+    except Exception:
+        return None
+    if not result:
+        return None
+    lines = [item[1] for item in result if len(item) > 2 and float(item[2]) >= 0.55]
+    text = "\n".join(lines)
+    effective = sum(1 for ch in text if ch.isalnum())
+    if effective < 10:
+        return None
+    return text
+
+
 # ---------------------------------------------------------------- 视觉模型
 
 def _request_json(method: str, url: str, headers: dict, data, timeout: int, retries: int, label: str = "调用"):
@@ -380,7 +414,14 @@ def process(path: Path, cfg: dict, opts) -> tuple[str, list[str]]:
         return call_vision_extract_text(cfg, [str(path)], opts.lang, opts.timeout, opts.retries), logs
 
     if kind == "image":
-        logs.append("图片 → 视觉模型")
+        if not opts.force_vision:
+            ocr_text = ocr_image(path)
+            if ocr_text is not None:
+                logs.append("图片 → 本地 RapidOCR 快速通道")
+                return ocr_text, logs
+            logs.append("图片 → 本地 OCR 未装/无文字，走视觉模型")
+        else:
+            logs.append("图片 → --force-vision，直接走视觉模型")
         return call_vision_extract_text(cfg, [str(path)], opts.lang, opts.timeout, opts.retries), logs
 
     if kind == "pdf":
@@ -437,7 +478,7 @@ def main() -> int:
     ap.add_argument("--lang", choices=["zh", "en"], default="zh",
                     help="视觉模型转录语言（默认 zh）")
     ap.add_argument("--force-vision", action="store_true",
-                    help="Office 文档也强制走视觉模型（不信任本地提取时）")
+                    help="跳过本地提取/OCR，图片和文档都强制走视觉模型（不信任本地结果时）")
     ap.add_argument("--configure", action="store_true",
                     help="仅重新配置视觉模型端点，不处理文件")
     ap.add_argument("--list-models", action="store_true",

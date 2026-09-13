@@ -34,12 +34,12 @@ description: 为不支持视觉的模型（如 DeepSeek-V4-Flash）把图片、P
 本技能是**通用**的，换电脑、换人使用只需满足：
 
 - **Python 3.9+**（推荐 3.12）。统一通过启动器 `run_vision_bridge.bat` 调用，它会自动按优先级查找解释器：`py -3` → `%LOCALAPPDATA%\Programs\Python\Python3*` → `C:\Python3*` → `python3.12`/`python3`/`python`。**不要直接用裸 `python` 命令**（在部分机器上可能指向 MSYS2 等无依赖的环境）。
-- **可选依赖**（本地提取 PDF/Office、压缩大图）：`pillow`、`pymupdf`、`python-docx`、`openpyxl`、`python-pptx`。启动器首次运行会自动尝试安装；失败时手动执行 `python -m pip install pillow pymupdf python-docx openpyxl python-pptx`（图片识别不需要这些库，缺失时自动降级）。
+- **可选依赖**（本地提取 PDF/Office、图片本地 OCR、压缩大图）：`pillow`、`pymupdf`、`python-docx`、`openpyxl`、`python-pptx`、`rapidocr-onnxruntime`。启动器首次运行会自动尝试安装；失败时手动执行 `python -m pip install pillow pymupdf python-docx openpyxl python-pptx rapidocr-onnxruntime`（缺失时自动降级：图片本地 OCR 缺失则直接走视觉模型）。
 - **视觉端点**：必须配置一个**支持图像的模型**（见配置步骤）。纯文本模型（如 DeepSeek-V4-Flash）会拒绝 `image_url`。
 
 > 所有调用统一走启动器：`"<skill目录>/run_vision_bridge.bat" <参数...>`
 
-> **本机（Windows + conda）**：启动器会自动优先使用 conda 环境 `visionbridge`（`D:\minconda3\envs\visionbridge\python.exe`，已装好 pillow/pymupdf/python-docx/openpyxl/python-pptx）。也可以跳过启动器直接调用：
+> **本机（Windows + conda）**：启动器会自动优先使用 conda 环境 `visionbridge`（`D:\minconda3\envs\visionbridge\python.exe`，已装好 pillow/pymupdf/python-docx/openpyxl/python-pptx/rapidocr-onnxruntime）。也可以跳过启动器直接调用：
 > `"D:\minconda3\envs\visionbridge\python.exe" "<skill目录>\scripts\read_content.py" <文件路径>`
 
 ## 工作流程
@@ -114,7 +114,7 @@ description: 为不支持视觉的模型（如 DeepSeek-V4-Flash）把图片、P
 - `--name-part <关键字>`：与 `--find-in` 联用，按文件名过滤
 - `--latest`：与 `--find-in` 联用，只处理最新修改的一个
 - `--lang en`：要求视觉模型以英文转录（默认中文 `zh`）
-- `--force-vision`：Office 文档也强制走视觉模型（不信任本地提取时）
+- `--force-vision`：图片和 Office 文档都跳过本地提取/OCR，强制走视觉模型（不信任本地结果时）
 - `--configure`：重新配置端点
 - `--list-models`：列出端点可用模型（便于挑选支持图像的视觉模型），不处理文件
 - `--timeout 120`：单次请求超时秒数（默认 120）
@@ -149,13 +149,13 @@ description: 为不支持视觉的模型（如 DeepSeek-V4-Flash）把图片、P
 
 | 文件类型 | 首选方式 | 降级方式 |
 |---|---|---|
-| 图片 (png/jpg/gif/webp/...) | 视觉模型识别 | — |
+| 图片 (png/jpg/gif/webp/...) | 本地 RapidOCR 快速通道（CPU 秒级，不联网） | 视觉模型（OCR 未装/失败/有效文字过少时自动降级；`--force-vision` 直接走视觉模型） |
 | PDF（文字版） | 本地 pymupdf 提取 | 扫描页自动切图送视觉模型 |
 | Excel (.xlsx) | 本地 openpyxl 提取 | —（失败则视觉模型） |
 | Word (.docx) | 本地 python-docx 提取 | 视觉模型兜底 |
 | PPT (.pptx) | 本地 python-pptx 提取 | 视觉模型兜底 |
 
-**本地提取不需要网络和密钥**，所以对 PDF/Office 通常更优先。图片没有本地兜底，必须走视觉模型。
+**本地提取和本地 OCR 都不需要网络和密钥**，所以对文字截图（配置页、报错、聊天记录、日志）通常秒级完成且不需要视觉端点。图表、照片等文字少的图会自动降级到视觉模型；OCR 对这类图本来就不擅长，准确率要求高的场景加 `--force-vision`。
 
 ## 常见问题排查
 
